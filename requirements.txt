@@ -1,7 +1,8 @@
-streamlit
-pandas
-numpy
-yfinance
-plotly
-requests
-python-dateutil
+streamlit>=1.40.0
+pandas>=2.2.0
+numpy>=1.26.0
+yfinance>=0.2.50
+plotly>=5.20.0
+requests>=2.31.0
+python-dateutil>=2.9.0
+breeze-connect>=1.0.50
