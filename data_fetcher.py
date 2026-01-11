@@ -1,6 +1,7 @@
 """
 Data Fetcher Module
-Handles data fetching from Breeze API or yfinance
+Handles data fetching from Breeze API (for prices) and yfinance (for fundamentals)
+Includes Sector-wise classification to reduce load.
 """
 
 import pandas as pd
@@ -8,305 +9,204 @@ import numpy as np
 from datetime import datetime, timedelta
 import yfinance as yf
 from typing import Optional, Dict, List
-import requests
 import time
 
 class DataFetcher:
-    """Fetches stock data from various sources"""
     
+    # -------------------------------------------------------------------------
+    # STATIC SECTOR UNIVERSE
+    # -------------------------------------------------------------------------
+    SECTOR_STOCKS = {
+        "Banking & Finance": [
+            "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS", 
+            "BAJFINANCE.NS", "BAJAJFINSV.NS", "SBILIFE.NS", "HDFCLIFE.NS", "CHOLAFIN.NS",
+            "M&MFIN.NS", "PFC.NS", "RECLTD.NS", "MUTHOOTFIN.NS", "SRTRANSFIN.NS",
+            "BANKBARODA.NS", "PNB.NS", "CANBK.NS", "INDUSINDBK.NS", "IDFCFIRSTB.NS"
+        ],
+        "IT & Tech": [
+            "TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "LTIM.NS", 
+            "TECHM.NS", "PERSISTENT.NS", "COFORGE.NS", "MPHASIS.NS", "LTTS.NS",
+            "TATAELXSI.NS", "KPITTECH.NS", "CYIENT.NS", "ZENSARTECH.NS", "SONATSOFTW.NS",
+            "NAUKRI.NS", "AFFLE.NS", "HAPPSTMNDS.NS", "TANLA.NS", "JUSTDIAL.NS"
+        ],
+        "Auto & Ancillary": [
+            "MARUTI.NS", "TATAMOTORS.NS", "M&M.NS", "BAJAJ-AUTO.NS", "EICHERMOT.NS",
+            "HEROMOTOCO.NS", "TVSMOTOR.NS", "ASHOKLEY.NS", "BHARATFORG.NS", "BALKRISIND.NS",
+            "MRF.NS", "APOLLOTYRE.NS", "BOSCHLTD.NS", "EXIDEIND.NS", "AMARAJABAT.NS",
+            "MOTHERSON.NS", "SONACOMS.NS", "UNO-MINDA.NS", "TIINDIA.NS", "TUBEINVEST.NS"
+        ],
+        "Pharma & Healthcare": [
+            "SUNPHARMA.NS", "DIVISLAB.NS", "CIPLA.NS", "DRREDDY.NS", "APOLLOHOSP.NS",
+            "TORNTPHARM.NS", "MANKIND.NS", "MAXHEALTH.NS", "LUPIN.NS", "AUROPHARMA.NS",
+            "ALKEM.NS", "BIOCON.NS", "SYNGENE.NS", "LAURUSLABS.NS", "GRANULES.NS",
+            "LALPATHLAB.NS", "METROPOLIS.NS", "NH.NS", "FORTIS.NS", "ASTERDM.NS"
+        ],
+        "FMCG & Consumption": [
+            "HINDUNILVR.NS", "ITC.NS", "NESTLEIND.NS", "BRITANNIA.NS", "TITAN.NS",
+            "TATACONSUM.NS", "DABUR.NS", "GODREJCP.NS", "MARICO.NS", "VARUNBEV.NS",
+            "ASIANPAINT.NS", "BERGEPAINT.NS", "PIDILITIND.NS", "COLPAL.NS", "PGHH.NS",
+            "TRENT.NS", "DMART.NS", "PAGEIND.NS", "BATAINDIA.NS", "RELAXO.NS"
+        ],
+        "Energy, Oil & Gas": [
+            "RELIANCE.NS", "ONGC.NS", "NTPC.NS", "POWERGRID.NS", "BPCL.NS",
+            "IOC.NS", "GAIL.NS", "COALINDIA.NS", "ADANIGREEN.NS", "ADANITRANS.NS",
+            "TATAPOWER.NS", "JSWENERGY.NS", "NHPC.NS", "SJVN.NS", "TORNTPOWER.NS",
+            "IGL.NS", "MGL.NS", "GUJGASLTD.NS", "PETRONET.NS", "OIL.NS"
+        ],
+        "Metals & Mining": [
+            "TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "VEDL.NS", "JINDALSTEL.NS",
+            "SAIL.NS", "NMDC.NS", "NATIONALUM.NS", "HINDCOPPER.NS", "APLAPOLLO.NS",
+            "RATNAMANI.NS", "WELCORP.NS", "JSL.NS", "MOIL.NS", "GPIL.NS"
+        ],
+        "Cement & Infra": [
+            "LT.NS", "ULTRACEMCO.NS", "GRASIM.NS", "AMBUJACEM.NS", "SHREECEM.NS",
+            "ACC.NS", "DALMIACEMT.NS", "RAMCOCEM.NS", "JKCEMENT.NS", "BIRLACORPN.NS",
+            "DLF.NS", "GODREJPROP.NS", "LODHA.NS", "OBEROIRLTY.NS", "PHOENIXLTD.NS"
+        ]
+    }
+
     def __init__(self, source="yfinance", api_key=None, api_secret=None, session_token=None):
-        """
-        Initialize data fetcher
-        
-        Args:
-            source: "breeze" or "yfinance"
-            api_key: Breeze API key (if using Breeze)
-            api_secret: Breeze API secret
-            session_token: Breeze session token
-        """
         self.source = source
         self.api_key = api_key
         self.api_secret = api_secret
         self.session_token = session_token
+        self.breeze = None
         
         if source == "breeze":
             self._initialize_breeze()
-        
-        # NSE 500 symbol list
-        self.nse500_symbols = None
-        self.sector_mapping = {}
-    
+
     def _initialize_breeze(self):
-        """Initialize Breeze API connection"""
         try:
             from breeze_connect import BreezeConnect
+            if not self.api_key:
+                print("⚠️ Missing Breeze credentials.")
+                self.source = "yfinance"
+                return
             self.breeze = BreezeConnect(api_key=self.api_key)
-            self.breeze.generate_session(
-                api_secret=self.api_secret,
-                session_token=self.session_token
-            )
+            self.breeze.generate_session(api_secret=self.api_secret, session_token=self.session_token)
+            print("✅ Breeze API initialized")
         except Exception as e:
-            print(f"Failed to initialize Breeze: {e}")
-            self.source = "yfinance"  # Fallback
-    
-    def fetch_nse500_universe(self) -> pd.DataFrame:
+            print(f"❌ Failed to initialize Breeze: {e}")
+            self.source = "yfinance"
+
+    def fetch_nse500_universe(self, sector_filter="All Top Liquid") -> pd.DataFrame:
         """
-        Fetch NSE 500 stock universe with basic info
-        
-        Returns:
-            DataFrame with symbol, company_name, sector, market_cap
+        Fetch universe based on selected sector to reduce load.
         """
-        # NSE 500 constituents - you can update this list or fetch dynamically
-        # For now, using a comprehensive list of major NSE stocks
+        selected_symbols = []
         
-        nse500_list = self._get_nse500_list()
+        # 1. Determine which stocks to fetch
+        if sector_filter in self.SECTOR_STOCKS:
+            # Specific sector
+            selected_symbols = self.SECTOR_STOCKS[sector_filter]
+        else:
+            # "All Top Liquid" - combine all lists (unique values)
+            all_syms = set()
+            for stock_list in self.SECTOR_STOCKS.values():
+                all_syms.update(stock_list)
+            selected_symbols = list(all_syms)
         
+        print(f"📁 Selected {sector_filter}: {len(selected_symbols)} stocks")
+        
+        # 2. Create DataFrame
         data = []
-        for symbol in nse500_list:
-            try:
-                stock_info = self._get_stock_info(symbol)
-                if stock_info:
-                    data.append(stock_info)
-                time.sleep(0.1)  # Rate limiting
-            except Exception as e:
-                print(f"Error fetching {symbol}: {e}")
-                continue
-        
-        df = pd.DataFrame(data)
-        self.nse500_symbols = df['symbol'].tolist()
-        
-        return df
-    
-    def _get_nse500_list(self) -> List[str]:
-        """Get list of NSE 500 symbols"""
-        # Major NSE stocks across sectors (Top 500 by market cap representation)
-        # In production, fetch this from NSE website or maintain updated list
-        
-        major_stocks = [
-            # Financials
-            "HDFCBANK", "ICICIBANK", "KOTAKBANK", "AXISBANK", "SBIN",
-            "BAJFINANCE", "BAJAJFINSV", "HDFC", "LT", "HDFCLIFE",
-            "SBILIFE", "ICICIGI", "HDFCAMC", "MUTHOOTFIN", "CHOLAFIN",
+        for symbol in selected_symbols:
+            clean_name = symbol.replace('.NS', '')
+            # Try to get Sector name from our dictionary reverse lookup
+            found_sector = "Unknown"
+            for sec, stocks in self.SECTOR_STOCKS.items():
+                if symbol in stocks:
+                    found_sector = sec
+                    break
             
-            # IT
-            "TCS", "INFY", "WIPRO", "HCLTECH", "TECHM",
-            "LTIM", "COFORGE", "MPHASIS", "PERSISTENT", "LTTS",
-            
-            # Auto
-            "MARUTI", "M&M", "TATAMOTORS", "BAJAJ-AUTO", "EICHERMOT",
-            "HEROMOTOCO", "TVSMOTOR", "ASHOKLEY", "APOLLOTYRE", "MRF",
-            
-            # FMCG
-            "HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA", "DABUR",
-            "MARICO", "GODREJCP", "COLPAL", "TATACONSUM", "EMAMILTD",
-            
-            # Pharma
-            "SUNPHARMA", "DRREDDY", "CIPLA", "DIVISLAB", "AUROPHARMA",
-            "LUPIN", "TORNTPHARM", "ALKEM", "BIOCON", "ZYDUSLIFE",
-            
-            # Energy & Oil/Gas
-            "RELIANCE", "ONGC", "IOC", "BPCL", "ADANIGREEN",
-            "ADANIPORTS", "ADANIENT", "POWERGRID", "NTPC", "COALINDIA",
-            
-            # Metals
-            "TATASTEEL", "JSWSTEEL", "HINDALCO", "VEDL", "SAIL",
-            "NMDC", "HINDCOPPER", "NATIONALUM", "JINDALSTEL", "JSWENERGY",
-            
-            # Cement
-            "ULTRACEMCO", "SHREECEM", "GRASIM", "AMBUJACEM", "ACC",
-            "DALMIACEMT", "JKCEMENT", "RAMCOCEM", "HEIDELBERG", "INDIACEM",
-            
-            # Consumer Durables
-            "TITAN", "VOLTAS", "HAVELLS", "DIXON", "CROMPTON",
-            "WHIRLPOOL", "BLUESTAR", "BATAINDIA", "RELAXO", "SYMPHONY",
-            
-            # Capital Goods & Infra
-            "LT", "ABB", "SIEMENS", "BEL", "HAL",
-            "BHEL", "THERMAX", "CUMMINSIND", "IRFC", "IRCTC",
-            
-            # Telecom
-            "BHARTIARTL", "INDUSINDBK",
-            
-            # Realty
-            "DLF", "GODREJPROP", "OBEROIRLTY", "PRESTIGE", "PHOENIXLTD",
-            
-            # PSU Banks
-            "SBIN", "PNB", "BANKBARODA", "CANBK", "UNIONBANK",
-            
-            # Private Banks
-            "HDFCBANK", "ICICIBANK", "KOTAKBANK", "AXISBANK", "INDUSINDBK",
-            
-            # Additional top stocks
-            "ASIANPAINT", "PIDILITIND", "BERGEPAINT", "AKZOINDIA", "KANSAINER",
-            "LTIM", "COFORGE", "MPHASIS", "PERSISTENT", "LTTS",
-            "ZOMATO", "NYKAA", "PAYTM", "DMART", "TRENT"
-        ]
-        
-        # Add .NS suffix for Yahoo Finance
-        return [f"{symbol}.NS" for symbol in major_stocks]
-    
-    def _get_stock_info(self, symbol: str) -> Optional[Dict]:
-        """Get basic stock information"""
-        try:
-            ticker = yf.Ticker(symbol)
-            info = ticker.info
-            
-            return {
+            data.append({
                 'symbol': symbol,
-                'company_name': info.get('longName', symbol.replace('.NS', '')),
-                'sector': info.get('sector', 'Unknown'),
-                'industry': info.get('industry', 'Unknown'),
-                'market_cap': info.get('marketCap', 0) / 10000000,  # Convert to Cr
-                'current_price': info.get('currentPrice', info.get('regularMarketPrice', 0)),
-                'pe_ratio': info.get('trailingPE', np.nan),
-                'beta': info.get('beta', np.nan)
-            }
-        except:
-            return None
-    
+                'company_name': clean_name,
+                'sector': found_sector,
+                'market_cap': 0, # Will be filled by fundamentals check later if needed
+                'current_price': 0
+            })
+            
+        return pd.DataFrame(data)
+
     def fetch_historical_prices(self, symbols: List[str], period_days: int = 365) -> Dict[str, pd.DataFrame]:
-        """
-        Fetch historical price data for multiple symbols
-        
-        Args:
-            symbols: List of stock symbols
-            period_days: Number of days of historical data
-        
-        Returns:
-            Dictionary mapping symbol to price DataFrame
-        """
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=period_days)
-        
         price_data = {}
         
-        if self.source == "yfinance":
+        # --- BREEZE API PATH ---
+        if self.source == "breeze" and self.breeze:
+            print(f"📥 Fetching via Breeze for {len(symbols)} stocks...")
+            to_date = datetime.now().isoformat()[:19] + '.000Z'
+            from_date = (datetime.now() - timedelta(days=period_days)).isoformat()[:19] + '.000Z'
+            
             for symbol in symbols:
                 try:
-                    ticker = yf.Ticker(symbol)
-                    hist = ticker.history(start=start_date, end=end_date)
-                    if not hist.empty:
-                        price_data[symbol] = hist
-                    time.sleep(0.1)
+                    stock_code = symbol.replace('.NS', '')
+                    data = self.breeze.get_historical_data_v2(
+                        interval="1day", from_date=from_date, to_date=to_date,
+                        stock_code=stock_code, exchange_code="NSE", product_type="cash"
+                    )
+                    
+                    if data.get('Status') == 200 and data.get('Success'):
+                        df = pd.DataFrame(data['Success'])
+                        df['datetime'] = pd.to_datetime(df['datetime'])
+                        df.set_index('datetime', inplace=True)
+                        
+                        # Map Breeze columns to standard
+                        df = df.rename(columns={'close': 'Close', 'open': 'Open', 'high': 'High', 'low': 'Low', 'volume': 'Volume'})
+                        df[['Close', 'Open', 'High', 'Low', 'Volume']] = df[['Close', 'Open', 'High', 'Low', 'Volume']].apply(pd.to_numeric)
+                        price_data[symbol] = df
                 except Exception as e:
-                    print(f"Error fetching prices for {symbol}: {e}")
-                    continue
-        
+                    print(f"❌ Breeze error {symbol}: {e}")
+                    
+        # --- YFINANCE PATH (Fallback) ---
+        else:
+            print(f"📥 Fetching via yfinance for {len(symbols)} stocks...")
+            chunk_size = 50
+            for i in range(0, len(symbols), chunk_size):
+                chunk = symbols[i:i+chunk_size]
+                try:
+                    data = yf.download(chunk, period=f"{period_days}d", group_by='ticker', progress=False, threads=True)
+                    for symbol in chunk:
+                        if symbol in data.columns.levels[0]:
+                            df = data[symbol].copy()
+                            if not df.empty:
+                                price_data[symbol] = df
+                    time.sleep(0.5)
+                except Exception as e:
+                    print(f"YF Batch error: {e}")
+                    
         return price_data
-    
+
     def fetch_fundamentals(self, symbols: List[str]) -> pd.DataFrame:
-        """
-        Fetch fundamental data for quality analysis
-        
-        Args:
-            symbols: List of stock symbols
-        
-        Returns:
-            DataFrame with fundamental metrics
-        """
         fundamentals = []
-        
         for symbol in symbols:
+            fund_data = {
+                'symbol': symbol, 'roe': np.nan, 'debt_equity': np.nan, 
+                'operating_margin': np.nan, 'market_cap': 0, 'pe_ratio': np.nan,
+                'current_price': 0
+            }
             try:
-                ticker = yf.Ticker(symbol)
-                info = ticker.info
-                
-                # Get financials
-                balance_sheet = ticker.balance_sheet
-                income_stmt = ticker.income_stmt
-                cash_flow = ticker.cashflow
-                
-                # Calculate metrics
-                fund_data = {
-                    'symbol': symbol,
-                    'roe': info.get('returnOnEquity', np.nan) * 100 if info.get('returnOnEquity') else np.nan,
-                    'roa': info.get('returnOnAssets', np.nan) * 100 if info.get('returnOnAssets') else np.nan,
-                    'debt_equity': info.get('debtToEquity', np.nan) / 100 if info.get('debtToEquity') else np.nan,
-                    'current_ratio': info.get('currentRatio', np.nan),
-                    'operating_margin': info.get('operatingMargins', np.nan) * 100 if info.get('operatingMargins') else np.nan,
-                    'profit_margin': info.get('profitMargins', np.nan) * 100 if info.get('profitMargins') else np.nan,
-                    'revenue_growth': info.get('revenueGrowth', np.nan) * 100 if info.get('revenueGrowth') else np.nan,
-                    'earnings_growth': info.get('earningsGrowth', np.nan) * 100 if info.get('earningsGrowth') else np.nan,
-                    'free_cash_flow': info.get('freeCashflow', 0),
-                    'book_value': info.get('bookValue', np.nan),
-                    'price_to_book': info.get('priceToBook', np.nan),
-                }
-                
-                fundamentals.append(fund_data)
-                time.sleep(0.1)
-                
-            except Exception as e:
-                print(f"Error fetching fundamentals for {symbol}: {e}")
-                continue
-        
+                # yfinance fetch
+                info = yf.Ticker(symbol).info
+                if info and 'regularMarketPrice' in info:
+                     fund_data.update({
+                        'roe': info.get('returnOnEquity', 0) * 100,
+                        'debt_equity': info.get('debtToEquity', 0) / 100,
+                        'operating_margin': info.get('operatingMargins', 0) * 100,
+                        'market_cap': info.get('marketCap', 0),
+                        'pe_ratio': info.get('trailingPE', np.nan),
+                        'current_price': info.get('currentPrice', info.get('regularMarketPrice', 0))
+                    })
+            except:
+                pass 
+            fundamentals.append(fund_data)
         return pd.DataFrame(fundamentals)
-    
-    def get_sector_index_data(self, sector: str, period_days: int = 365) -> Optional[pd.DataFrame]:
-        """
-        Get sector index data for comparison
+
+    def get_benchmark_data(self, benchmark="NIFTY50", period_days=365):
+        # Always use yfinance for indices as they are complex in Breeze
+        sym = '^NSEI' if benchmark == 'NIFTY50' else '^CRSLDX'
+        try: return yf.Ticker(sym).history(period=f"{period_days}d")
+        except: return None
         
-        Args:
-            sector: Sector name
-            period_days: Historical period
-        
-        Returns:
-            DataFrame with sector index prices
-        """
-        # Sector index mapping (Nifty sector indices)
-        sector_indices = {
-            'IT': '^CNXIT',
-            'AUTO': '^CNXAUTO',
-            'BANK': '^NSEBANK',
-            'FINANCIAL SERVICES': '^NIFTYFIN',
-            'FMCG': '^CNXFMCG',
-            'PHARMA': '^CNXPHARMA',
-            'REALTY': '^CNXREALTY',
-            'METALS': '^CNXMETAL',
-            'MEDIA': '^CNXMEDIA',
-            'OIL & GAS': '^CNXENERGY',
-            'PSU BANK': '^CNXPSUBANK',
-        }
-        
-        index_symbol = sector_indices.get(sector.upper())
-        if not index_symbol:
-            return None
-        
-        try:
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=period_days)
-            
-            ticker = yf.Ticker(index_symbol)
-            hist = ticker.history(start=start_date, end=end_date)
-            return hist
-        except:
-            return None
-    
-    def get_benchmark_data(self, benchmark: str = "NIFTY50", period_days: int = 365) -> Optional[pd.DataFrame]:
-        """
-        Get benchmark index data
-        
-        Args:
-            benchmark: "NIFTY50" or "NSE500"
-            period_days: Historical period
-        
-        Returns:
-            DataFrame with benchmark prices
-        """
-        benchmark_map = {
-            'NIFTY50': '^NSEI',
-            'NSE500': '^CRSLDX'  # CNX500
-        }
-        
-        symbol = benchmark_map.get(benchmark)
-        if not symbol:
-            return None
-        
-        try:
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=period_days)
-            
-            ticker = yf.Ticker(symbol)
-            hist = ticker.history(start=start_date, end=end_date)
-            return hist
-        except:
-            return None
+    def get_sector_index_data(self, sector, period_days=365):
+        return None # Disabled for speed
