@@ -20,6 +20,10 @@ wheels/
 .installed.cfg
 *.egg
 
+# Cache
+.cache/
+*.pkl
+
 # Virtual Environment
 venv/
 env/
@@ -48,23 +52,12 @@ Thumbs.db
 # Logs
 *.log
 
-# Data files (if you cache data locally)
+# Data files
 *.csv
 *.xlsx
 *.parquet
 data/
-cache/
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
 *.ipynb
-
-# API Keys (extra safety)
-*secret*.toml
-*secret*.txt
-*api_key*
-*token*
-
-# Test files
-test_*.py
-*_test.py
